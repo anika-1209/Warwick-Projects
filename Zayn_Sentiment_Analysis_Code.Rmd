@@ -1,0 +1,297 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-03-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages("textdata")
+```
+
+
+```{r}
+library(tidyverse)
+library(tidytext)
+
+# Load manually collected lyrics
+zayn_lyrics <- read_csv("ZaynLyrics.csv")
+
+# Clean and tokenize lyrics
+clean_lyrics <- zayn_lyrics %>%
+  mutate(Lyrics = str_to_lower(Lyrics)) %>%
+  unnest_tokens(word, Lyrics) %>%
+  anti_join(stop_words)
+
+```
+
+```{r}
+zayn_sentiment <- clean_lyrics %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(Album, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment_score = positive - negative)
+
+print(zayn_sentiment)
+
+```
+
+```{r}
+library(textdata)
+zayn_sentiment_afinn <- clean_lyrics %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(Album) %>%
+  summarise(sentiment_score = sum(value))
+
+print(zayn_sentiment_afinn)
+
+```
+```{r}
+# Perform sentiment analysis per song
+afinn_sentiment_df <- clean_lyrics %>%
+  inner_join(get_sentiments("afinn")) %>%  # Match words with AFINN scores
+  group_by(Album, Song) %>%                # Group by album and song
+  summarise(sentiment_score = sum(value), .groups = "drop")  # Sum sentiment values
+
+```
+
+
+```{r}
+ggplot(zayn_sentiment, aes(x = Album, y = sentiment_score, group = 1)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Sentiment Trends Across Albums", x = "Album", y = "Sentiment Score")
+```
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(tidytext)
+
+
+# View structure of data (ensure correct column names)
+glimpse(zayn_lyrics)
+
+
+# Create a custom lexicon for psychological constructs
+construct_lexicon <- tribble(
+  ~construct, ~words,
+  "self_determination", c("free", "independent", "control", "choice", "autonomy"),
+  "resilience", c("strong", "overcome", "persevere", "endure", "survive"),
+  "vulnerability", c("fear", "alone", "cry", "weak", "break", "lost")
+) %>%
+  unnest(words)  # Convert list to rows
+
+# Merge lyrics with the custom lexicon
+lexicon_analysis <- clean_lyrics %>%
+  inner_join(construct_lexicon, by = c("word" = "words")) %>%
+  count(Album, Song, construct)  # Count occurrences of each construct per song
+
+# Save the results to a CSV
+#write_csv(lexicon_analysis, "lexicon_analysis.csv")
+
+# View output
+print(lexicon_analysis)
+```
+```{r}
+
+library(topicmodels)
+
+
+# Create a document-term matrix (needed for LDA)
+dtm <- clean_lyrics %>%
+  count(Song, word, sort = TRUE) %>%
+  cast_dtm(document = song, term = word, value = n)
+
+# Choose number of topics (adjust as needed)
+k <- 3  
+
+# Perform LDA topic modeling
+lda_model <- LDA(dtm, k = k, control = list(seed = 1234))
+
+# Get the top terms per topic
+lda_topics <- tidy(lda_model, matrix = "beta")
+
+# Extract top words per topic
+top_terms <- lda_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  arrange(topic, desc(beta))
+
+# Print the top words for each topic
+print(top_terms)
+
+# Save results to CSV
+#write_csv(topics_per_song, "lda_song_topics.csv")
+
+```
+```{r}
+# Create a Document-Term Matrix (DTM)
+library(topicmodels)
+
+dtm <- clean_lyrics %>%
+  count(Album, word) %>%
+  cast_dtm(document = Album, term = word, value = n)
+
+# Fit LDA model (choosing 3 topics as an example)
+lda_model <- LDA(dtm, k = 3, control = list(seed = 1234))
+
+# Extract topics
+topics <- tidy(lda_model, matrix = "beta")
+
+# View top words for each topic
+top_words <- topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup()
+
+print(top_words)
+
+```
+
+
+```{r}
+topic_proportions <- tidy(lda_model, matrix = "gamma")
+
+print(topic_proportions)
+```
+```{r}
+# Load NRC sentiment lexicon
+nrc_lexicon <- get_sentiments("nrc")
+
+# Join lyrics with NRC lexicon
+nrc_analysis <- clean_lyrics %>%
+  inner_join(nrc_lexicon, by = "word") %>%
+  count(Album, Song, sentiment) %>%
+  spread(sentiment, n, fill = 0)
+
+# View the NRC sentiment breakdown per song
+print(nrc_analysis)
+```
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+
+# Define additional filler words to remove
+custom_stopwords <- c("ooh", "yeah", "wanna", "uh", "whoa", "la", "na", "ha", "mmm", "baby", "hey", "woah")
+
+# Function to create word cloud for a given album in a separate window
+generate_wordcloud <- function(album_name, data) {
+  album_words <- data %>%
+    filter(Album == album_name) %>%
+    pull(word) # Extract words from the album
+  
+  # Create a text corpus
+  corpus <- Corpus(VectorSource(album_words))
+  
+  # Text preprocessing
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  corpus <- tm_map(corpus, removePunctuation)
+  corpus <- tm_map(corpus, removeNumbers)
+  corpus <- tm_map(corpus, removeWords, stopwords("english"))
+  corpus <- tm_map(corpus, removeWords, custom_stopwords) # Remove additional filler words
+  
+  # Create term-document matrix
+  tdm <- TermDocumentMatrix(corpus)
+  matrix <- as.matrix(tdm)
+  word_freqs <- sort(rowSums(matrix), decreasing = TRUE)
+  word_df <- data.frame(word = names(word_freqs), freq = word_freqs)
+  
+  # Open a new plotting window for each album
+  if (.Platform$OS.type == "windows") {
+    windows()  # Windows
+  } else {
+    quartz()   # macOS
+  }
+  
+  # Generate word cloud
+  set.seed(123)
+  wordcloud(words = word_df$word, freq = word_df$freq, min.freq = 2,
+            max.words = 100, random.order = FALSE, rot.per = 0.35,
+            colors = brewer.pal(8, "Dark2"))
+  
+  title(main = paste("Word Cloud for", album_name))
+}
+
+# Generate word clouds for each album separately
+albums <- unique(clean_lyrics$Album)
+for (album in albums) {
+  generate_wordcloud(album, clean_lyrics)
+}
+
+```
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+library(tm)
+
+# Define additional filler words to remove
+custom_stopwords <- c("ooh", "yeah", "wanna", "uh", "whoa", "la", "na", "ha", "mmm", "baby", "hey", "woah")
+
+# Function to generate a bar chart of the top 10 words for each album
+generate_bargraph <- function(album_name, data) {
+  album_words <- data %>%
+    filter(Album == album_name) %>%
+    pull(word) # Extract words from the album
+  
+  # Create a text corpus
+  corpus <- Corpus(VectorSource(album_words))
+  
+  # Text preprocessing
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  corpus <- tm_map(corpus, removePunctuation)
+  corpus <- tm_map(corpus, removeNumbers)
+  corpus <- tm_map(corpus, removeWords, stopwords("english"))
+  corpus <- tm_map(corpus, removeWords, custom_stopwords) # Remove additional filler words
+  
+  # Create term-document matrix
+  tdm <- TermDocumentMatrix(corpus)
+  matrix <- as.matrix(tdm)
+  word_freqs <- sort(rowSums(matrix), decreasing = TRUE)
+  word_df <- data.frame(word = names(word_freqs), freq = word_freqs)
+  
+  # Select top 10 most frequent words
+  top_words <- word_df %>% top_n(10, freq)
+  
+  # Generate bar graph
+  ggplot(top_words, aes(x = reorder(word, freq), y = freq, fill = word)) +
+    geom_bar(stat = "identity", show.legend = FALSE) +
+    coord_flip() +
+    labs(title = paste("Top 10 Words in", album_name),
+         x = "Word",
+         y = "Frequency") +
+    theme_minimal()
+}
+
+# Generate bar graphs for each album
+albums <- unique(clean_lyrics$Album)
+for (album in albums) {
+  print(generate_bargraph(album, clean_lyrics))
+}
+
+```
+
+```{r}
+# Load NRC sentiment lexicon
+nrc_lexicon <- get_sentiments("nrc")
+
+# Join lyrics with NRC lexicon
+nrc_analysis <- clean_lyrics %>%
+  inner_join(nrc_lexicon, by = "word") %>%
+  count(Album, sentiment) %>%
+  spread(sentiment, n, fill = 0)
+
+# View the NRC sentiment breakdown per song
+print(nrc_analysis)
+```
+
+
+
